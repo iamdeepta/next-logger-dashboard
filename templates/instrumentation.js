@@ -8,10 +8,15 @@
  * captured at the Node.js http layer instead — see patchHttpLayer below.
  * Recording never breaks the application call: any failure inside the
  * recorder is swallowed and the original call proceeds or throws as usual.
+ *
+ * NOTE: this file must NOT statically import Node builtins
+ * (node:http / node:https / node:zlib). Next.js compiles it for the Edge
+ * runtime too, and webpack has no plugin for the "node:" scheme — the
+ * build fails with UnhandledSchemeError (Turbopack only warns, which is
+ * why the failure only shows up in webpack apps). The builtins are
+ * loaded lazily at runtime, inside register(), only when the Node.js
+ * runtime is confirmed — see loadNodeBuiltins below.
  */
-import * as http from 'node:http';
-import * as https from 'node:https';
-import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { addRecord, maskToken, MAX_BODY_CHARS, readCookieNames, truncateBody, } from './lib/logger-dashboard-store';
 function isOwnEndpoint(url) {
     return url.includes('/api/logger-dashboard');
@@ -56,12 +61,26 @@ function preserveFetchMarkers(wrapper, original) {
  * ClientRequest prototype is patched for everything else (http.get,
  * direct ClientRequest use). A magic-byte fallback decodes gzip/zlib
  * even when no encoding was captured.
+ *
+ * The Node builtins (http/https/zlib) are NOT imported at the top of
+ * this file: they are loaded lazily by loadNodeBuiltins() inside
+ * register(), after the Node.js runtime check. A static node: import
+ * breaks webpack builds (UnhandledSchemeError) because Next.js also
+ * compiles this file for the Edge runtime.
  */
 const HTTP_BODY_KEY = '__loggerDashboardReqBody__';
 const HTTP_TRACKED_KEY = '__loggerDashboardHttpTracked__';
 const HTTP_ENCODING_KEY = '__loggerDashboardContentEncoding__';
 const HTTP_PATCHED_KEY = '__LOGGER_DASHBOARD_HTTP_PATCHED__';
 const HTTP_REQUEST_PATCHED_KEY = '__LOGGER_DASHBOARD_HTTP_REQUEST_PATCHED__';
+// Lazily loaded Node builtins (see loadNodeBuiltins). Null until
+// register() loads them; patchHttpLayer/decodeResponseBody only run
+// after a successful load.
+let nodeHttp = null;
+let nodeHttps = null;
+let nodeGunzipSync = null;
+let nodeInflateSync = null;
+let nodeBrotliDecompressSync = null;
 function httpRequestUrl(req) {
     try {
         const protocol = String(req.protocol || 'http:');
@@ -101,16 +120,19 @@ function decodeResponseBody(encoding, buffers) {
         // exists, the bytes themselves say gzip (1f 8b) or zlib (78 01/9c/da).
         if (enc.includes('gzip') ||
             (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b)) {
-            return gunzipSync(raw).toString('utf8');
+            return nodeGunzipSync ? nodeGunzipSync(raw).toString('utf8') : raw.toString('utf8');
         }
         if (enc.includes('deflate') ||
             (raw.length >= 2 &&
                 raw[0] === 0x78 &&
                 (raw[1] === 0x01 || raw[1] === 0x9c || raw[1] === 0xda))) {
-            return inflateSync(raw).toString('utf8');
+            return nodeInflateSync ? nodeInflateSync(raw).toString('utf8') : raw.toString('utf8');
         }
-        if (enc.includes('br'))
-            return brotliDecompressSync(raw).toString('utf8');
+        if (enc.includes('br')) {
+            return nodeBrotliDecompressSync
+                ? nodeBrotliDecompressSync(raw).toString('utf8')
+                : raw.toString('utf8');
+        }
         return raw.toString('utf8');
     }
     catch {
@@ -285,11 +307,69 @@ function wrapHttpRequest(originalRequest) {
         return req;
     };
 }
+/**
+ * Load the Node builtins used by the http-layer capture — lazily, at
+ * runtime, only after register() confirmed the Node.js runtime.
+ *
+ * Why lazy: a static node:http import in this file breaks
+ * webpack builds — Next.js compiles instrumentation.ts for the Edge
+ * runtime too, and webpack has no plugin for the "node:" scheme
+ * (UnhandledSchemeError; verified live with `next dev --webpack`).
+ * Turbopack only warns about the same imports, so the failure is
+ * invisible in Turbopack apps. Loading here keeps the static module
+ * graph free of node: specifiers, so every bundler compiles it.
+ *
+ * Primary path: process.getBuiltinModule (Node >= 20.16 / >= 22.3).
+ * Fallback for older Node: a dynamic import whose specifier lives
+ * inside new Function, so bundlers cannot see it at build time — a
+ * plain import('node:http') written in source would be statically
+ * analysed and fail the Edge compilation the same way. Returns false
+ * when neither works; the caller then skips http-layer capture (server
+ * fetch is still recorded).
+ */
+async function loadNodeBuiltins() {
+    if (nodeHttp && nodeHttps)
+        return true;
+    try {
+        const getBuiltin = process.getBuiltinModule;
+        if (typeof getBuiltin === 'function') {
+            const httpMod = process.getBuiltinModule('node:http');
+            const httpsMod = process.getBuiltinModule('node:https');
+            const zlibMod = process.getBuiltinModule('node:zlib');
+            nodeHttp = httpMod;
+            nodeHttps = httpsMod;
+            nodeGunzipSync = zlibMod.gunzipSync;
+            nodeInflateSync = zlibMod.inflateSync;
+            nodeBrotliDecompressSync = zlibMod.brotliDecompressSync;
+            return true;
+        }
+    }
+    catch {
+        // fall through to the dynamic-import fallback
+    }
+    try {
+        const dynImport = new Function('specifier', 'return import(specifier)');
+        const [httpMod, httpsMod, zlibMod] = await Promise.all([
+            dynImport('node:http'),
+            dynImport('node:https'),
+            dynImport('node:zlib'),
+        ]);
+        nodeHttp = httpMod;
+        nodeHttps = httpsMod;
+        nodeGunzipSync = zlibMod.gunzipSync;
+        nodeInflateSync = zlibMod.inflateSync;
+        nodeBrotliDecompressSync = zlibMod.brotliDecompressSync;
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 function patchHttpLayer() {
     // (a) http.request / https.request — callback wrapping snapshots the
     // response content-encoding before axios deletes it, and trackRequest
     // marks the request so the prototype patch below skips it.
-    for (const mod of [http, https]) {
+    for (const mod of [nodeHttp, nodeHttps]) {
         try {
             const m = mod;
             if (m && typeof m.request === 'function' && !m.request[HTTP_REQUEST_PATCHED_KEY]) {
@@ -305,7 +385,7 @@ function patchHttpLayer() {
     // (b) ClientRequest prototype — covers http.get/https.get (which call
     // the internal request function, not the patched property), direct
     // ClientRequest use, and anything else that ends a request.
-    const proto = http.ClientRequest?.prototype;
+    const proto = nodeHttp.ClientRequest?.prototype;
     if (!proto || proto[HTTP_PATCHED_KEY])
         return;
     proto[HTTP_PATCHED_KEY] = true;
@@ -455,5 +535,15 @@ export async function register() {
     wrappedFetch.__LOGGER_DASHBOARD_WRAPPED__ = true;
     g.fetch = wrappedFetch;
     // Server-side axios / raw http(s): captured at the Node http layer.
-    patchHttpLayer();
+    // The builtins load lazily (no static node: imports in this file —
+    // webpack cannot compile those for the Edge runtime). If they cannot
+    // be loaded, http-layer capture is skipped and server fetch is still
+    // recorded.
+    try {
+        if (await loadNodeBuiltins())
+            patchHttpLayer();
+    }
+    catch {
+        // ignore
+    }
 }
