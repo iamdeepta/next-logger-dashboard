@@ -11,8 +11,12 @@ and cookie values are never stored.
 
 - **Server-side `fetch`** via `instrumentation.ts` (Node.js runtime): every
   server call is recorded with timing and bodies, without editing app code.
-- **Server-side axios** when axios is installed (via the same
-  instrumentation file, recorded directly — no extra HTTP round-trip).
+- **Server-side axios** (any instance, including `axios.create()`) and
+  raw `http`/`https` calls, captured at the Node.js http layer by the
+  same instrumentation file — no extra HTTP round-trip, and no axios
+  interceptors (bundlers give the instrumentation module and the app
+  different copies of the axios module, so interceptors attached in
+  instrumentation never see the app's calls).
 - **Browser `fetch` / `XMLHttpRequest`** via the logger imported in the
   root layout. Completed calls are POSTed as finished records to an
   ingest endpoint — the request itself is **never re-executed**, so a
@@ -66,6 +70,13 @@ Then start the dev server and open:
 ```
 http://localhost:3000/logger-dashboard
 ```
+
+Upgrading from 0.1.0: the server capture in `instrumentation.ts` changed
+completely in 0.1.1. After `npm install next-logger-dashboard@latest`,
+delete your project's old `instrumentation.ts` (project root or `src/`)
+and run `npx next-logger-dashboard setup --auto` again — it recreates
+the file from the new template. Your other scaffolded files are
+unchanged and are kept as-is.
 
 The dashboard polls every 2 seconds and offers method/status/source
 filters, text search, a detail view (query table, payloads, masked token,

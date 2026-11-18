@@ -288,7 +288,7 @@ function initBrowserLogging(): void {
   // calls are already captured — with full URL, status and body — by the
   // fetch/XHR patching above. Adding axios interceptors as well would
   // record every axios call twice. Server-side axios is covered by the
-  // interceptors in instrumentation.ts instead.
+  // http-layer capture in instrumentation.ts instead.
 }
 
 initBrowserLogging();
