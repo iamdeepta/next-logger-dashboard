@@ -44,6 +44,33 @@ function isOwnEndpoint(url: string): boolean {
   return text.includes('/api/logger-dashboard');
 }
 
+/**
+ * Next.js framework requests — never real API calls. App Router
+ * navigation fetches RSC payloads from the page URL itself, so without
+ * this filter the dashboard fills up with page URLs and the real API
+ * calls disappear in the noise. Prefetches carry the same markers.
+ */
+function isFrameworkRequest(url: string, headerObj?: Record<string, string>): boolean {
+  try {
+    const text = String(url || '');
+    if (!text) return false;
+    if (text.includes('_rsc=')) return true;
+    const path = new URL(text, 'http://localhost').pathname;
+    if (path === '/_next' || path.startsWith('/_next/')) return true;
+    if (headerObj) {
+      for (const k of Object.keys(headerObj)) {
+        const lk = k.toLowerCase();
+        if (lk === 'rsc' || lk === 'next-router-state-tree' || lk === 'next-router-prefetch') {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function truncateBody(body: string | null | undefined): string | null {
   if (body === null || body === undefined) return null;
   const text = String(body);
@@ -149,7 +176,10 @@ function initBrowserLogging(): void {
       } catch {
         return originalFetch(...args);
       }
-      if (isOwnEndpoint(url)) return originalFetch(...args);
+      const headerObj = headersToObject(init?.headers || (input as any)?.headers);
+      if (isOwnEndpoint(url) || isFrameworkRequest(url, headerObj)) {
+        return originalFetch(...args);
+      }
 
       const method = String(
         init?.method ||
@@ -157,7 +187,6 @@ function initBrowserLogging(): void {
             ? (input as any).method
             : 'GET'),
       ).toUpperCase();
-      const headerObj = headersToObject(init?.headers || (input as any)?.headers);
       const splitAt = url.indexOf('?');
       const startedAt = Date.now();
       let requestPayload: string | null = null;
@@ -170,6 +199,14 @@ function initBrowserLogging(): void {
 
       try {
         const response = await originalFetch(...args);
+        // RSC payload responses are framework traffic even when the
+        // request itself carried no marker (e.g. prefetch).
+        try {
+          const ct = response.headers.get('content-type') || '';
+          if (ct.includes('text/x-component')) return response;
+        } catch {
+          // ignore
+        }
         let responseBody: string | null = null;
         try {
           responseBody = truncateBody(await response.clone().text());
@@ -236,9 +273,18 @@ function initBrowserLogging(): void {
       proto.send = function (this: any, body: any) {
         const xhr = this;
         const url: string = xhr.__loggerDashboardUrl || '';
-        if (!isOwnEndpoint(url)) {
+        if (!isOwnEndpoint(url) && !isFrameworkRequest(url)) {
           const onDone = () => {
             try {
+              // RSC payload responses are framework traffic.
+              try {
+                const ct = xhr.getResponseHeader
+                  ? String(xhr.getResponseHeader('Content-Type') || '')
+                  : '';
+                if (ct.includes('text/x-component')) return;
+              } catch {
+                // ignore
+              }
               let responseBody: string | null = null;
               try {
                 responseBody = truncateBody(

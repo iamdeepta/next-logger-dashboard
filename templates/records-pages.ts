@@ -5,7 +5,7 @@
  * x-logger-key header.
  */
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { clearRecords, getRecords } from '../../../lib/logger-dashboard-store';
+import { clearRecords, getRecords, getServerStatus } from '../../../lib/logger-dashboard-store';
 
 function keyOk(req: NextApiRequest): boolean {
   const expected = process.env.LOGGER_DASHBOARD_KEY;
@@ -21,6 +21,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse): void
     return;
   }
   if (req.method === 'GET') {
+    const status = getServerStatus();
+    if (status) res.setHeader('x-logger-server-status', JSON.stringify(status));
     res.status(200).json(getRecords());
     return;
   }

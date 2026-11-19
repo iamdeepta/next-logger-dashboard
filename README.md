@@ -3,9 +3,11 @@
 Zero-config API logger dashboard for **Next.js** (App Router & Pages Router).
 
 See every API call your app makes — server-side `fetch`, browser `fetch` /
-`XMLHttpRequest`, and axios — live, in one dashboard: method, URL, query
+`XMLHttpRequest`, and axios — in one dashboard: method, URL, query
 parameters, status, duration, request/response bodies. Tokens are masked
-and cookie values are never stored.
+and cookie values are never stored. Next.js internal requests (page
+navigation RSC payloads, `/_next/*`) are not recorded — only real API
+calls appear.
 
 ## What it captures
 
@@ -23,8 +25,6 @@ and cookie values are never stored.
   POST/PUT/DELETE from the browser runs exactly once. Axios calls are
   captured by the same patching (axios uses the XHR/fetch adapters in
   the browser), so they are recorded once, not twice.
-- **Browser axios** when axios is installed (dynamic import — axios is
-  optional and never required for the build).
 
 Records live in server memory only (newest first, max 200) and reset on
 restart. Nothing leaves the server except through the same-origin
@@ -71,16 +71,29 @@ Then start the dev server and open:
 http://localhost:3000/logger-dashboard
 ```
 
-Upgrading from 0.1.0: the server capture in `instrumentation.ts` changed
-completely in 0.1.1. After `npm install next-logger-dashboard@latest`,
-delete your project's old `instrumentation.ts` (project root or `src/`)
-and run `npx next-logger-dashboard setup --auto` again — it recreates
-the file from the new template. Your other scaffolded files are
-unchanged and are kept as-is.
+Upgrading to 0.1.3: the dashboard, browser logger, record store,
+instrumentation and records route changed. After
+`npm install next-logger-dashboard@latest`, delete the scaffolded
+copies that changed — `instrumentation.ts` (project root or `src/`),
+`lib/logger-dashboard.ts`, `lib/logger-dashboard-store.ts`, the
+`logger-dashboard` page, and the `records` route — and run
+`npx next-logger-dashboard setup --auto` again; it recreates them from
+the new templates. Your other scaffolded files are unchanged and are
+kept as-is.
 
-The dashboard polls every 2 seconds and offers method/status/source
-filters, text search, a detail view (query table, payloads, masked token,
-cookie names), copy-as-JSON, pause/resume, and one-click clear.
+The dashboard loads once and refreshes only when Refresh is clicked
+(no live polling). It offers method/status/source filters, text search,
+a detail view (query table, payloads, masked token, cookie names),
+copy-as-JSON, and one-click clear. The left (list) and right (detail)
+panes scroll independently. A status line shows whether server capture
+is active.
+
+If the dashboard shows "Server capture: not detected", the
+instrumentation file is not loading in the app: check that
+`instrumentation.ts` is at the project root (or `src/`) and that the
+app uses the App Router — the Pages Router has no instrumentation
+hook, so server capture cannot run there. Next 15 needs
+`experimental.instrumentationHook: true` in `next.config`.
 
 ## Access key (optional)
 

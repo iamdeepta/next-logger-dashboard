@@ -3,31 +3,31 @@
  * next-logger-dashboard — dashboard page.
  *
  * Self-contained: all styles are inline (nld-* classes), no Tailwind or
- * other setup required. Polls /api/logger-dashboard/records every 2s.
- * The record shape is defined locally so this page never imports the
+ * other setup required. Loads /api/logger-dashboard/records once on
+ * mount; the Refresh button reloads it (no live polling). The record
+ * shape is defined locally so this page never imports the
  * server-only store module into the client bundle.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 const CSS = `
-.nld-wrap { font-family: ui-sans-system, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #0b0f14; color: #e6edf3; min-height: 100vh; padding: 20px; box-sizing: border-box; }
+.nld-wrap { font-family: ui-sans-system, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #0b0f14; color: #e6edf3; height: 100vh; height: 100dvh; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; }
 .nld-wrap * { box-sizing: border-box; }
-.nld-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.nld-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; flex-shrink: 0; }
 .nld-title { font-size: 22px; font-weight: 700; margin: 0; }
-.nld-sub { color: #8b949e; font-size: 13px; margin: 0 0 16px; }
-.nld-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #3fb950; }
-.nld-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; animation: nld-pulse 1.6s infinite; }
-.nld-dot-paused { background: #8b949e; animation: none; }
-@keyframes nld-pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
-.nld-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.nld-sub { color: #8b949e; font-size: 13px; margin: 0 0 8px; flex-shrink: 0; }
+.nld-server { font-size: 12px; margin: 0 0 14px; color: #3fb950; flex-shrink: 0; }
+.nld-server-warn { color: #d29922; }
+.nld-manual { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #8b949e; }
+.nld-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; flex-shrink: 0; }
 .nld-input, .nld-select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px; font-size: 13px; outline: none; }
 .nld-input:focus, .nld-select:focus { border-color: #1f6feb; }
 .nld-input { min-width: 220px; flex: 1; }
 .nld-btn { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; }
 .nld-btn:hover { background: #30363d; }
 .nld-btn-danger:hover { border-color: #f85149; color: #ff7b72; }
-.nld-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; }
-@media (max-width: 900px) { .nld-grid { grid-template-columns: 1fr; } }
-.nld-list { display: flex; flex-direction: column; gap: 8px; }
+.nld-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; flex: 1; min-height: 0; }
+@media (max-width: 900px) { .nld-grid { grid-template-columns: 1fr; } .nld-wrap { height: auto; min-height: 100vh; overflow: visible; display: block; } .nld-list, .nld-detail { overflow: visible; max-height: none; } }
+.nld-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .nld-row { text-align: left; width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; }
 .nld-row:hover { border-color: #1f6feb; }
 .nld-row-active { border-color: #1f6feb; background: #0d2137; }
@@ -44,7 +44,7 @@ const CSS = `
 .nld-badge-warn { background: #241a08; color: #d29922; }
 .nld-badge-fail { background: #2c1215; color: #ff7b72; }
 .nld-badge-src { background: #21262d; color: #8b949e; }
-.nld-detail { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px; min-height: 200px; }
+.nld-detail { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow-y: auto; min-height: 0; }
 .nld-detail h3 { margin: 0 0 10px; font-size: 14px; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
 .nld-kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 10px; font-size: 13px; margin-bottom: 12px; }
 .nld-kv dt { color: #8b949e; }
@@ -57,7 +57,7 @@ const CSS = `
 .nld-empty, .nld-error { background: #161b22; border: 1px dashed #30363d; border-radius: 10px; padding: 28px; text-align: center; color: #8b949e; font-size: 14px; }
 .nld-error { border-color: #f85149; color: #ff7b72; }
 .nld-keyform { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
-.nld-foot { color: #8b949e; font-size: 12px; margin-top: 16px; }
+.nld-foot { color: #8b949e; font-size: 12px; margin-top: 16px; flex-shrink: 0; }
 .nld-count { color: #8b949e; font-size: 13px; }
 `;
 function statusGroup(status) {
@@ -130,7 +130,7 @@ export default function LoggerDashboardPage() {
     const [statusFilter, setStatusFilter] = useState('ALL');
     const [sourceFilter, setSourceFilter] = useState('ALL');
     const [selected, setSelected] = useState(null);
-    const [polling, setPolling] = useState(true);
+    const [serverStatus, setServerStatus] = useState(null);
     const [wrapBody, setWrapBody] = useState(true);
     const [copied, setCopied] = useState(false);
     const [keyRequired, setKeyRequired] = useState(false);
@@ -159,6 +159,13 @@ export default function LoggerDashboardPage() {
                 throw new Error('Records request failed: ' + res.status);
             const data = (await res.json());
             setRecords(Array.isArray(data) ? data : []);
+            try {
+                const statusHeader = res.headers.get('x-logger-server-status');
+                setServerStatus(statusHeader ? JSON.parse(statusHeader) : null);
+            }
+            catch {
+                setServerStatus(null);
+            }
             setFetchError('');
             setKeyRequired(false);
         }
@@ -169,13 +176,11 @@ export default function LoggerDashboardPage() {
             setLoading(false);
         }
     }, []);
+    // Manual refresh only: no live polling. The list loads once on
+    // mount and refreshes when the Refresh button is clicked.
     useEffect(() => {
         load();
-        if (!polling)
-            return undefined;
-        const timer = setInterval(load, 2000);
-        return () => clearInterval(timer);
-    }, [load, polling]);
+    }, [load]);
     const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
         return records.filter((r) => {
@@ -213,7 +218,7 @@ export default function LoggerDashboardPage() {
             load();
         }
         catch {
-            // ignore — next poll refreshes the list
+            // ignore — click Refresh to reload
         }
     };
     const onKeySubmit = async (e) => {
@@ -248,16 +253,23 @@ export default function LoggerDashboardPage() {
       <style>{CSS}</style>
       <div className="nld-head">
         <h1 className="nld-title">API Logger Dashboard</h1>
-        <span className="nld-live">
-          <span className={polling ? 'nld-dot' : 'nld-dot nld-dot-paused'}/>
-          {polling ? 'Live' : 'Paused'}
-        </span>
+        <span className="nld-manual">Manual refresh</span>
         <span className="nld-count">
           {records.length} record{records.length === 1 ? '' : 's'} (in-memory, newest first, max 200)
         </span>
       </div>
       <p className="nld-sub">
-        Server fetch, browser fetch/XHR and axios calls, as they happen. Tokens are masked and cookie values are never stored.
+        Real API calls only — page loads and Next.js internal requests are not recorded.
+        Click Refresh to reload; there is no live polling. Tokens are masked and cookie values are never stored.
+      </p>
+      <p className={serverStatus && serverStatus.fetchWrapped && serverStatus.httpLayer === 'active'
+            ? 'nld-server'
+            : 'nld-server nld-server-warn'}>
+        {serverStatus === null
+            ? 'Server capture: not detected — instrumentation.ts may not be loaded in this app (Pages Router has no instrumentation hook; Next 15 needs experimental.instrumentationHook).'
+            : serverStatus.fetchWrapped && serverStatus.httpLayer === 'active'
+                ? `Server capture on · fetch wrapped · HTTP layer active · Node ${serverStatus.nodeVersion || 'unknown'}`
+                : `Server capture partial · fetch ${serverStatus.fetchWrapped ? 'wrapped' : 'not wrapped'} · HTTP layer ${serverStatus.httpLayer}${serverStatus.httpLayerReason ? ' — ' + serverStatus.httpLayerReason : ''}`}
       </p>
 
       {keyRequired && (<form className="nld-keyform" onSubmit={onKeySubmit}>
@@ -291,9 +303,6 @@ export default function LoggerDashboardPage() {
           <option value="server">Server only</option>
           <option value="client">Client only</option>
         </select>
-        <button className="nld-btn" type="button" onClick={() => setPolling((p) => !p)}>
-          {polling ? 'Pause' : 'Resume'}
-        </button>
         <button className="nld-btn" type="button" onClick={() => load()}>
           Refresh
         </button>

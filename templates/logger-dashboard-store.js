@@ -76,3 +76,35 @@ export function addRecord(partial) {
 export function clearRecords() {
     getStore().length = 0;
 }
+/**
+ * Next.js framework requests — never real API calls. The browser logger
+ * sees them as client fetches (RSC payloads on navigation carry the
+ * page URL), and the server fetch wrapper can see them too. Recording
+ * them drowns the real API calls in page URLs.
+ *
+ * - `?_rsc=` — App Router RSC payload requests (client navigation,
+ *   prefetch). The page URL is the endpoint, which is exactly the
+ *   "only page URLs" noise users report.
+ * - `/_next/` — framework assets and data (static chunks, data JSON).
+ */
+export function isFrameworkRequest(url) {
+    try {
+        const text = String(url || '');
+        if (!text)
+            return false;
+        if (text.includes('_rsc='))
+            return true;
+        const path = new URL(text, 'http://localhost').pathname;
+        return path === '/_next' || path.startsWith('/_next/');
+    }
+    catch {
+        return false;
+    }
+}
+const STATUS_KEY = '__LOGGER_DASHBOARD_SERVER_STATUS__';
+/** Null when instrumentation.ts never ran in this process. */
+export function getServerStatus() {
+    const g = globalThis;
+    const status = g[STATUS_KEY];
+    return status ?? null;
+}

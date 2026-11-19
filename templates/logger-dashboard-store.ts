@@ -106,3 +106,49 @@ export function addRecord(
 export function clearRecords(): void {
   getStore().length = 0;
 }
+
+/**
+ * Next.js framework requests — never real API calls. The browser logger
+ * sees them as client fetches (RSC payloads on navigation carry the
+ * page URL), and the server fetch wrapper can see them too. Recording
+ * them drowns the real API calls in page URLs.
+ *
+ * - `?_rsc=` — App Router RSC payload requests (client navigation,
+ *   prefetch). The page URL is the endpoint, which is exactly the
+ *   "only page URLs" noise users report.
+ * - `/_next/` — framework assets and data (static chunks, data JSON).
+ */
+export function isFrameworkRequest(url: string): boolean {
+  try {
+    const text = String(url || '');
+    if (!text) return false;
+    if (text.includes('_rsc=')) return true;
+    const path = new URL(text, 'http://localhost').pathname;
+    return path === '/_next' || path.startsWith('/_next/');
+  } catch {
+    return false;
+  }
+}
+
+/** Server capture state, set by instrumentation.ts register(). */
+export interface ServerCaptureStatus {
+  /** process.env.NEXT_RUNTIME when register() ran ('nodejs', 'edge', or null). */
+  runtime: string | null;
+  /** True once the server fetch wrapper is installed. */
+  fetchWrapped: boolean;
+  /** 'active' once the http layer (axios/raw http) is patched. */
+  httpLayer: 'active' | 'unavailable' | 'not-started';
+  /** Why the http layer is unavailable, when it is. */
+  httpLayerReason: string | null;
+  /** process.version, e.g. "v22.14.0". */
+  nodeVersion: string | null;
+}
+
+const STATUS_KEY = '__LOGGER_DASHBOARD_SERVER_STATUS__';
+
+/** Null when instrumentation.ts never ran in this process. */
+export function getServerStatus(): ServerCaptureStatus | null {
+  const g = globalThis as any;
+  const status = g[STATUS_KEY] as ServerCaptureStatus | undefined;
+  return status ?? null;
+}

@@ -19,6 +19,7 @@
  */
 import {
   addRecord,
+  isFrameworkRequest,
   maskToken,
   MAX_BODY_CHARS,
   readCookieNames,
@@ -160,7 +161,7 @@ function trackRequest(req: any): void {
   if (!req || req[HTTP_TRACKED_KEY]) return;
   req[HTTP_TRACKED_KEY] = true;
   const fullUrl = httpRequestUrl(req);
-  if (isOwnEndpoint(fullUrl)) return;
+  if (isOwnEndpoint(fullUrl) || isFrameworkRequest(fullUrl)) return;
   const startedAt = Date.now();
   const splitAt = fullUrl.indexOf('?');
   const endpoint = splitAt >= 0 ? fullUrl.slice(0, splitAt) : fullUrl;
@@ -433,16 +434,13 @@ function patchHttpLayer(): void {
   };
 }
 
-export async function register(): Promise<void> {
-  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
-
+/**
+ * Install the server fetch wrapper. Kept separate from register() so a
+ * missing fetch cannot block the http-layer capture below — axios and
+ * raw http calls do not go through fetch.
+ */
+function installFetchWrapper(nativeFetch: typeof fetch): void {
   const g = globalThis as any;
-  if (g.__LOGGER_DASHBOARD_PATCHED__) return;
-  g.__LOGGER_DASHBOARD_PATCHED__ = true;
-
-  const nativeFetch = g.fetch as typeof fetch;
-  if (typeof nativeFetch !== 'function') return;
-
   const wrappedFetch = async (...fetchArgs: Parameters<typeof fetch>): Promise<Response> => {
     const requestTarget = fetchArgs[0];
     const requestOptions = fetchArgs[1] as RequestInit | undefined;
@@ -454,7 +452,7 @@ export async function register(): Promise<void> {
     } catch {
       return nativeFetch(...fetchArgs);
     }
-    if (isOwnEndpoint(fullUrl)) return nativeFetch(...fetchArgs);
+    if (isOwnEndpoint(fullUrl) || isFrameworkRequest(fullUrl)) return nativeFetch(...fetchArgs);
 
     const splitAt = fullUrl.indexOf('?');
     const endpoint = splitAt >= 0 ? fullUrl.slice(0, splitAt) : fullUrl;
@@ -536,6 +534,51 @@ export async function register(): Promise<void> {
   preserveFetchMarkers(wrappedFetch, nativeFetch);
   (wrappedFetch as any).__LOGGER_DASHBOARD_WRAPPED__ = true;
   g.fetch = wrappedFetch;
+}
+
+export async function register(): Promise<void> {
+  const g = globalThis as any;
+  // Capture state for the dashboard (and the dev terminal): if this
+  // never appears, instrumentation.ts is not loading in this app at
+  // all — e.g. Pages Router (no instrumentation hook) or Next 15
+  // without experimental.instrumentationHook.
+  const status: any = {
+    runtime: process.env.NEXT_RUNTIME ?? null,
+    fetchWrapped: false,
+    httpLayer: 'not-started',
+    httpLayerReason: null,
+    nodeVersion: typeof process !== 'undefined' ? process.version : null,
+  };
+  g.__LOGGER_DASHBOARD_SERVER_STATUS__ = status;
+
+  // Only skip when the runtime is EXPLICITLY not Node.js (Edge).
+  // NEXT_RUNTIME can be unset in older setups; an unset value in a
+  // Node process must not disable capture.
+  if (process.env.NEXT_RUNTIME && process.env.NEXT_RUNTIME !== 'nodejs') {
+    try {
+      console.log(
+        '[next-logger-dashboard] server capture off: runtime is ' +
+          process.env.NEXT_RUNTIME +
+          ' (capture runs in the Node.js runtime only)',
+      );
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  if (g.__LOGGER_DASHBOARD_PATCHED__) return;
+  g.__LOGGER_DASHBOARD_PATCHED__ = true;
+
+  const nativeFetch = g.fetch as typeof fetch;
+  if (typeof nativeFetch === 'function') {
+    try {
+      installFetchWrapper(nativeFetch);
+      status.fetchWrapped = true;
+    } catch {
+      // ignore — fetch stays unwrapped, http layer still runs
+    }
+  }
 
   // Server-side axios / raw http(s): captured at the Node http layer.
   // The builtins load lazily (no static node: imports in this file —
@@ -543,7 +586,27 @@ export async function register(): Promise<void> {
   // be loaded, http-layer capture is skipped and server fetch is still
   // recorded.
   try {
-    if (await loadNodeBuiltins()) patchHttpLayer();
+    if (await loadNodeBuiltins()) {
+      patchHttpLayer();
+      status.httpLayer = 'active';
+    } else {
+      status.httpLayer = 'unavailable';
+      status.httpLayerReason =
+        'Node builtins could not be loaded (needs Node >= 20.16 / >= 22.3, or a working dynamic import)';
+    }
+  } catch (err) {
+    status.httpLayer = 'unavailable';
+    status.httpLayerReason = err instanceof Error ? err.message : String(err);
+  }
+
+  try {
+    console.log(
+      '[next-logger-dashboard] server capture: fetch ' +
+        (status.fetchWrapped ? 'wrapped' : 'not wrapped') +
+        ', http layer ' + status.httpLayer +
+        (status.httpLayerReason ? ' (' + status.httpLayerReason + ')' : '') +
+        ', Node ' + (status.nodeVersion || 'unknown'),
+    );
   } catch {
     // ignore
   }
