@@ -25,7 +25,8 @@ const CSS = `
 .nld-btn { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; }
 .nld-btn:hover { background: #30363d; }
 .nld-btn-danger:hover { border-color: #f85149; color: #ff7b72; }
-.nld-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; flex: 1; min-height: 0; }
+.nld-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 14px; align-items: stretch; flex: 1; min-height: 0; }
+/* NOTE: align-items must stay stretch, never start. With start, the panes size to their content, overflow past the viewport and get clipped by the wrap's overflow: hidden — nothing below the fold is reachable and their own overflow-y never scrolls. */
 @media (max-width: 900px) { .nld-grid { grid-template-columns: 1fr; } .nld-wrap { height: auto; min-height: 100vh; overflow: visible; display: block; } .nld-list, .nld-detail { overflow: visible; max-height: none; } }
 .nld-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; min-height: 0; padding-right: 2px; }
 .nld-row { text-align: left; width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; }
@@ -131,6 +132,7 @@ export default function LoggerDashboardPage() {
     const [sourceFilter, setSourceFilter] = useState('ALL');
     const [selected, setSelected] = useState(null);
     const [serverStatus, setServerStatus] = useState(null);
+    const [lastRefreshed, setLastRefreshed] = useState(null);
     const [wrapBody, setWrapBody] = useState(true);
     const [copied, setCopied] = useState(false);
     const [keyRequired, setKeyRequired] = useState(false);
@@ -159,6 +161,7 @@ export default function LoggerDashboardPage() {
                 throw new Error('Records request failed: ' + res.status);
             const data = (await res.json());
             setRecords(Array.isArray(data) ? data : []);
+            setLastRefreshed(new Date().toLocaleTimeString());
             try {
                 const statusHeader = res.headers.get('x-logger-server-status');
                 setServerStatus(statusHeader ? JSON.parse(statusHeader) : null);
@@ -306,6 +309,9 @@ export default function LoggerDashboardPage() {
         <button className="nld-btn" type="button" onClick={() => load()}>
           Refresh
         </button>
+        <span className="nld-count">
+          Last updated: {lastRefreshed ?? '—'} (click Refresh after using the app)
+        </span>
         <button className="nld-btn nld-btn-danger" type="button" onClick={onClear}>
           Clear logs
         </button>
