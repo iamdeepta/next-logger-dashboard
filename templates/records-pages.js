@@ -1,4 +1,4 @@
-import { clearRecords, getRecords, getServerStatus } from '../../../lib/logger-dashboard-store';
+import { clearRecords, getRecords, getServerStatus, healFetchWrapperIfNeeded } from '../../../lib/logger-dashboard-store';
 function keyOk(req) {
     const expected = process.env.LOGGER_DASHBOARD_KEY;
     if (!expected)
@@ -13,6 +13,9 @@ export default function handler(req, res) {
         return;
     }
     if (req.method === 'GET') {
+        // Re-wrap the server fetch wrapper if it was replaced after startup,
+        // before reading records or the (live) capture status.
+        healFetchWrapperIfNeeded();
         const status = getServerStatus();
         if (status)
             res.setHeader('x-logger-server-status', JSON.stringify(status));

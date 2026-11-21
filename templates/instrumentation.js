@@ -434,8 +434,12 @@ function patchHttpLayer() {
  * missing fetch cannot block the http-layer capture below — axios and
  * raw http calls do not go through fetch.
  */
-function installFetchWrapper(nativeFetch) {
-    const g = globalThis;
+/**
+ * Build the recording wrapper around whichever fetch is current.
+ * The wrapper is transparent: it calls the underlying fetch and only
+ * clones the response to read its body for the record.
+ */
+function createWrappedFetch(nativeFetch) {
     const wrappedFetch = async (...fetchArgs) => {
         const requestTarget = fetchArgs[0];
         const requestOptions = fetchArgs[1];
@@ -530,7 +534,43 @@ function installFetchWrapper(nativeFetch) {
     };
     preserveFetchMarkers(wrappedFetch, nativeFetch);
     wrappedFetch.__LOGGER_DASHBOARD_WRAPPED__ = true;
-    g.fetch = wrappedFetch;
+    return wrappedFetch;
+}
+function installFetchWrapper(nativeFetch) {
+    const g = globalThis;
+    const wrapped = createWrappedFetch(nativeFetch);
+    g.__LOGGER_DASHBOARD_NATIVE_FETCH__ = nativeFetch;
+    g.__LOGGER_DASHBOARD_WRAPPED_FETCH__ = wrapped;
+    g.fetch = wrapped;
+}
+/**
+ * Re-wrap the global fetch if something replaced our wrapper after
+ * register() ran. Next.js patches global fetch at server startup, and
+ * depending on version/bundler that patch can land AFTER register(),
+ * silently dropping the wrapper — the dashboard then still shows
+ * "fetch wrapped" (set at register time) while NO server fetch is ever
+ * recorded. Healing re-wraps the CURRENT fetch, so Next's own patch
+ * underneath keeps working (caching, static-store tracking).
+ */
+function healFetchWrapper() {
+    const g = globalThis;
+    try {
+        const current = g.fetch;
+        if (typeof current !== 'function')
+            return false;
+        if (current.__LOGGER_DASHBOARD_WRAPPED__)
+            return true;
+        const wrapped = createWrappedFetch(current);
+        g.__LOGGER_DASHBOARD_WRAPPED_FETCH__ = wrapped;
+        g.fetch = wrapped;
+        const status = g.__LOGGER_DASHBOARD_SERVER_STATUS__;
+        if (status)
+            status.fetchWrapped = true;
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 export async function register() {
     const g = globalThis;
@@ -572,6 +612,28 @@ export async function register() {
         catch {
             // ignore — fetch stays unwrapped, http layer still runs
         }
+    }
+    // The wrapper can be replaced after register() (see healFetchWrapper).
+    // Re-wrap whenever that happens: on a short unref'd timer so app
+    // fetches are captured even before the dashboard is ever opened, and
+    // on demand from the records route / any recorded request.
+    try {
+        g.__LOGGER_DASHBOARD_HEAL_FETCH__ = healFetchWrapper;
+        if (!g.__LOGGER_DASHBOARD_HEAL_TIMER__) {
+            const timer = setInterval(() => {
+                try {
+                    healFetchWrapper();
+                }
+                catch {
+                    // ignore
+                }
+            }, 2000);
+            timer.unref?.();
+            g.__LOGGER_DASHBOARD_HEAL_TIMER__ = timer;
+        }
+    }
+    catch {
+        // ignore — on-demand healing from the records route still applies
     }
     // Server-side axios / raw http(s): captured at the Node http layer.
     // The builtins load lazily (no static node: imports in this file —

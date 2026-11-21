@@ -50,6 +50,9 @@ export function getRecords() {
 }
 /** Store a record. Missing fields are filled with safe defaults. */
 export function addRecord(partial) {
+    // Any recorded request (e.g. an axios call via the http layer) is a
+    // chance to re-wrap the server fetch wrapper if it was replaced.
+    healFetchWrapperIfNeeded();
     const record = {
         id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
@@ -102,9 +105,32 @@ export function isFrameworkRequest(url) {
     }
 }
 const STATUS_KEY = '__LOGGER_DASHBOARD_SERVER_STATUS__';
+/**
+ * Re-wrap the server fetch wrapper if something replaced it after
+ * register() (see instrumentation.ts healFetchWrapper). No-op in the
+ * browser and when instrumentation never ran.
+ */
+export function healFetchWrapperIfNeeded() {
+    try {
+        const heal = globalThis.__LOGGER_DASHBOARD_HEAL_FETCH__;
+        if (typeof heal === 'function')
+            heal();
+    }
+    catch {
+        // ignore
+    }
+}
 /** Null when instrumentation.ts never ran in this process. */
 export function getServerStatus() {
     const g = globalThis;
     const status = g[STATUS_KEY];
-    return status ?? null;
+    if (!status)
+        return null;
+    // fetchWrapped was set when register() ran; report the LIVE state —
+    // the wrapper can be replaced afterwards, and the dashboard must not
+    // claim "on" while no server fetch is being recorded.
+    return {
+        ...status,
+        fetchWrapped: g.fetch?.__LOGGER_DASHBOARD_WRAPPED__ === true,
+    };
 }

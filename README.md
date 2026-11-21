@@ -71,6 +71,18 @@ Then start the dev server and open:
 http://localhost:3000/logger-dashboard
 ```
 
+Upgrading to 0.1.5: instrumentation, the record store and the records
+route changed. After `npm install next-logger-dashboard@latest`, delete
+the scaffolded copies that changed — `instrumentation.ts` (project root
+or `src/`), `lib/logger-dashboard-store.ts`, and the `records` route —
+and run `npx next-logger-dashboard setup --auto` again; it recreates
+them from the new templates. Your other scaffolded files are unchanged
+and are kept as-is. 0.1.5 heals the server fetch wrapper if Next.js
+replaces it after startup (the wrapper can be silently dropped while
+the dashboard still claims capture is on, so no server fetch is ever
+recorded); the status line now reports whether fetch is actually
+wrapped right now.
+
 Upgrading to 0.1.3: the dashboard, browser logger, record store,
 instrumentation and records route changed. After
 `npm install next-logger-dashboard@latest`, delete the scaffolded
